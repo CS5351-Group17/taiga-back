@@ -4,6 +4,7 @@
 # file, You can obtain one at http://mozilla.org/MPL/2.0/.
 #
 # Copyright (c) 2021-present Kaleidos INC
+from django.utils import timezone
 
 #
 from django.utils.translation import gettext as _
@@ -261,6 +262,41 @@ class IssueViewSet(AssignedToSignalMixin, OCCResourceMixin, VotedResourceMixin,
         ret = services.update_issues_milestone_in_bulk(data["bulk_issues"], milestone)
 
         return response.Ok(ret)
+    
+    @list_route(methods=["POST"])
+    def get_ai_suggestion(self, request, **kwargs):
+        validator = validators.IssueAISuggestionValidator(data=request.DATA)
+        if not validator.is_valid():
+            return response.BadRequest(validator.errors)
+
+        data = validator.data
+        issue = get_object_or_error(models.Issue, request.user, pk=data["issue_id"])
+        self.check_permissions(request, "get_ai_suggestion", issue)
+
+        # TODO: Implement AI suggestion logic here
+        suggestion = "This is a placeholder for AI-generated suggestion."
+
+        return response.Ok(suggestion)
+
+    @list_route(methods=["POST"])
+    def ai_analyze(self, request, **kwargs):
+        validator = validators.IssueAIAnalysisValidator(data=request.DATA)
+        if not validator.is_valid():
+            return response.BadRequest(validator.errors)
+
+        data = validator.data
+        project = get_object_or_error(Project, request.user, pk=data["project_id"])
+        self.check_permissions(request, "ai_analyze", project)
+
+        results = services.analyze_issues_with_ai(data["issues"])
+
+        return response.Ok({
+            "success": True,
+            "project_id": data["project_id"],
+            "analyzed_at": timezone.now().isoformat(),
+            "total_issues": len(results),
+            "results": results
+        })
 
 
 class IssueVotersViewSet(VotersViewSetMixin, ModelListViewSet):
