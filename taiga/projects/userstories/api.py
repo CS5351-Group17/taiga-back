@@ -11,6 +11,7 @@ from django.db.models import Max
 
 from django.utils.translation import gettext as _
 from django.http import HttpResponse
+from django.utils import timezone
 
 from taiga.base import filters as base_filters
 from taiga.base import exceptions as exc
@@ -37,6 +38,7 @@ from taiga.projects.tagging.api import TaggedResourceMixin
 from taiga.projects.votes.mixins.viewsets import VotedResourceMixin
 from taiga.projects.votes.mixins.viewsets import VotersViewSetMixin
 from taiga.projects.userstories.utils import attach_extra_info
+from taiga.projects.userstories.services import AIServiceError, generate_single_story
 
 from . import filters
 from . import models
@@ -506,7 +508,53 @@ class UserStoryViewSet(AssignedUsersSignalMixin, OCCResourceMixin,
                                                                before_userstory=before_userstory,
                                                                bulk_userstories=data["bulk_userstories"])
         return response.Ok(ret)
+    
 
+
+
+    @list_route(methods=["POST"])
+    def ai_suggestion(self, request, **kwargs):
+        # 1. 验证器
+        validator = validators.StoryAnalysisValidator(data=request.DATA)
+        if not validator.is_valid():
+            return response.BadRequest(validator.errors)
+
+        # 2. 获取数据
+        data = validator.data
+        
+        # 4. 调用服务（包含错误处理）
+        try:
+            # 从 data 中获取 text
+            story_data = generate_single_story(data["text"])
+
+            # 5. 转换为前端期望的格式
+            print("AI story generation successful.")
+            print(f"Generated Story Data: {story_data}")
+            
+            # 将 tags 从字符串数组转换为对象数组
+            formatted_tags = [{"name": tag} for tag in story_data.get("tags", [])]
+            
+            return response.Ok({
+                "suggestion_subject": story_data.get("title", ""),
+                "suggestion_description": story_data.get("description", ""),
+                "suggestion_tags": formatted_tags
+            })
+
+        except AIServiceError as e:
+            return response.InternalServerError({
+                "success": False,
+                "error": f"AI service failed: {str(e)}"
+            })
+        
+        except Exception as e:
+            # 记录详细错误信息
+            import traceback
+            logger.error(f"Unexpected error in ai_suggestion: {traceback.format_exc()}")
+            return response.InternalServerError({
+                "success": False,
+                "error": "An unexpected server error occurred."
+            })
+        
 
 class UserStoryVotersViewSet(VotersViewSetMixin, ModelListViewSet):
     permission_classes = (permissions.UserStoryVotersPermission,)

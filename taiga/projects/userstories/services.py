@@ -7,8 +7,12 @@
 
 from typing import List, Optional
 
+import os
+import re
 import csv
 import io
+import json
+import logging
 from collections import OrderedDict
 from operator import itemgetter
 from contextlib import closing
@@ -36,6 +40,7 @@ from taiga.projects.votes.utils import attach_total_voters_to_queryset
 from taiga.users.models import User
 from taiga.users.gravatar import get_gravatar_id
 from taiga.users.services import get_big_photo_url, get_photo_url
+from taiga.doubai_ai import ask_once
 
 from . import models
 
@@ -1288,3 +1293,168 @@ def get_userstories_filters_data(project, querysets):
     )
 
     return data
+
+
+
+logger = logging.getLogger(__name__)
+
+class AIServiceError(Exception):
+    """Custom exception for AI service errors."""
+    pass
+
+    
+def generate_single_story(requirement_text: str):
+    """
+    Generates a structured user story from a single piece of natural language text. 
+    It applies cleaning and anonymization before building the prompt.
+
+    Args:
+        requirement_text (str): The raw natural language description of the requirement.
+
+    Returns:
+        dict: The generated user story structure (Title, Description, Tags).
+              Raises AIServiceError on failure.
+    """
+    try:
+        # 0. 预处理：清洁并保护输入数据
+        print("Starting preprocessing of requirement text.")
+        processed_text = preprocess(requirement_text)
+        print("Preprocessing completed.")
+        
+        # 1. 构建 Prompt 和 Question
+        print("Building prompt for AI model.")
+        system_prompt = "You are a product owner specializing in Agile user story creation. Your response must be a valid JSON object."
+        question = build_story_prompt(processed_text)
+        print("Prompt built successfully.")
+        
+        # 2. 根据环境变量决定使用模拟还是真实 AI
+        use_mock = os.getenv('USE_MOCK_AI', 'False').lower() == 'true'
+        
+        if use_mock:
+            print("Using simulated AI response for local testing.")
+            ai_text_response = simulate_ai_response()
+        else:
+            print("Calling real AI service.")
+            ai_text_response = ask_once(question=question, prompt=system_prompt)
+        
+        print("AI response received.")
+        print(f"AI Response: {ai_text_response}")
+        
+        # 3. 解析返回的文本
+        print("Parsing AI response.")
+        story_data = parse_ai_response(ai_text_response)
+        print("AI response parsed successfully.")
+        
+        # 检查解析结果是否是默认的失败结构
+        print(f"Parsed Story Data: {story_data}")
+        print("Validating parsed story data.")
+        default_story = get_default_story()
+        if story_data.get("title") == default_story.get("title"):
+            raise ValueError("AI response failed to parse and returned a default structure.")
+                 
+        return story_data
+            
+    except Exception as e:
+        # 使用 processed_text 进行日志记录，避免记录原始敏感数据
+        log_text = processed_text[:50] if processed_text else requirement_text[:50]
+        logger.error(f"AI story generation failed for processed requirement: '{log_text}...': {e}")
+        raise AIServiceError(str(e))
+
+    # --- 预处理辅助方法 ---
+    
+def anonymize(text: str) -> str:
+    """Anonymize sensitive data: email, phone, ID, bank card"""
+    patterns = {
+            # 邮箱：匹配标准邮箱格式
+        r"\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b": "[EMAIL]",
+            # 手机：匹配 1[3-9]开头的11位数字 (中国大陆常见格式)
+        r"1[3-9]\d{9}": "[PHONE]",
+            # 身份证：匹配 17 位数字加最后一位数字或 X/x
+        r"\d{17}[\dXx]": "[ID]",
+            # 银行卡：匹配 12 到 19 位数字
+        r"\d{12,19}": "[BANKCARD]"
+    }
+    for pattern, repl in patterns.items():
+            # 注意：这里需要导入 re 模块
+        text = re.sub(pattern, repl, text)
+    return text
+
+def clean_text(text: str) -> str:
+    """Basic cleaning: remove HTML, URLs, extra spaces"""
+    # 移除 HTML 标签
+    text = re.sub(r"<[^>]+>", "", text)
+    # 移除 URLs
+    text = re.sub(r"http\S+|www\.\S+", "", text)
+    # 规范化空格：将多个空格替换为单个空格，并移除首尾空格
+    text = re.sub(r"\s+", " ", text).strip()
+    return text
+
+def preprocess(text: str) -> str:
+    """Full preprocessing pipeline: Anonymize -> Clean"""
+    result = text
+        # 1. 匿名化敏感信息
+    result = anonymize(result)
+        # 2. 基础文本清洁
+    result = clean_text(result)
+    return result
+    
+    # --- 故事生成辅助方法（保持不变）---
+
+def build_story_prompt(requirement_text):
+    """Builds the prompt for the AI model based on natural language text."""
+    return f"""Analyze the following natural language requirement and transform it 
+into a structured User Story in English.
+
+Requirement Text:
+"{requirement_text}"
+
+Please provide the analysis result in a valid JSON format with the following fields:
+1. 'title': A short, clear headline summarizing the story.
+2. 'description': The full user story text, strictly following the template: 
+   "As a <role>, I want <goal>, So that <value>".
+3. 'tags': A list of 3 to 5 relevant keywords or labels (e.g., feature area, priority, user type).
+
+IMPORTANT:
+- Your entire response MUST be a single, valid JSON object.
+- The 'tags' array must contain between 3 and 5 strings.
+- Do not include any text or formatting outside of the JSON object.
+- The entire response should be in English."""
+
+
+def parse_ai_response(ai_text):
+    """Parses the JSON response from the AI."""
+    try:
+        # 添加类型检查
+        if not isinstance(ai_text, str):
+            logger.error(f"Expected string but got {type(ai_text)}: {ai_text}")
+            return get_default_story()
+        
+        json_start = ai_text.find('{')
+        json_end = ai_text.rfind('}') + 1
+        if json_start == -1 or json_end == 0:
+            raise ValueError("No JSON object found in AI response")
+            
+        json_str = ai_text[json_start:json_end]
+        return json.loads(json_str)
+    except (json.JSONDecodeError, ValueError) as e:
+        logger.warning(f"Failed to parse AI response: {e}\nRaw: {ai_text[:100]}...")
+        return get_default_story()
+
+def get_default_story():
+    """Returns a default user story object for fallback cases."""
+    return {
+        "title": "Default Story (AI Failed)",
+        "description": "As a system administrator, I want to review this requirement, So that the correct user story can be created manually.",
+        "tags": [{"name":"manual-review"}, {"name":"ai-failure"}, {"name":"critical"}]
+    }
+
+# 模拟 AI 响应，用于测试
+def simulate_ai_response():
+    return """
+        {
+            "title": "Allow Users to Set Profile Picture",
+            "description": "As a registered user, I want to upload and crop an image for my profile, So that I can personalize my account and be easily recognized by others.",
+            "tags": ["Authentication", "Profile", "User-Facing", "Media", "High"]
+        }
+    """
+
