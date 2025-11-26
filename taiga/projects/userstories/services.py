@@ -1305,7 +1305,6 @@ class AIServiceError(Exception):
     pass
 
 # --- 核心故事生成函数（函数名和返回格式变更）---
-
 def generate_single_story(requirement_text: str):
     """
     Generates a structured AI suggestion (Subject, Description, Tags) from a
@@ -1329,11 +1328,7 @@ def generate_single_story(requirement_text: str):
         system_prompt = "You are a product owner specializing in Agile user story creation. Your response must be a valid JSON object."
         question = build_suggestion_prompt(processed_text) # 变动点 1: 调用新的 prompt 函数
             
-        # 2. 调用 ask_once 函数 (替换为实际的 AI 调用)
-        # 假设 ai_text_response = ask_once(question=question, prompt=system_prompt)
-        # 为了演示，我们使用一个模拟的响应：
-        # 注意: 在实际运行中，您需要确保您的 ask_once 函数返回的是符合新格式的文本。
-        # 暂时使用一个模拟调用：
+        # 2. 调用 ask_once 函数
         ai_text_response = ask_once(question=question, prompt=system_prompt)
             
         # 3. 解析返回的文本 (已修改，解析新格式)
@@ -1350,41 +1345,66 @@ def generate_single_story(requirement_text: str):
         # 使用 processed_text 进行日志记录，避免记录原始敏感数据
         log_text = processed_text[:50] if processed_text else requirement_text[:50]
         logger.error(f"AI suggestion generation failed for processed requirement: '{log_text}...': {e}")
-        # 变动点 3: 确保 raise AIServiceError 包装了原始错误
         raise AIServiceError(str(e))
 
 # --- 预处理辅助方法（保持不变）---
-def anonymize(text: str) -> str:
-    """Anonymize sensitive data: email, phone, ID, bank card"""
-    patterns = [
-        # 1. 邮箱：最精确，冲突少
-        (r"\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b", "[EMAIL]"),
-        
-        # 2. 身份证：精确匹配 17 位数字 + 最后一位数字或 X/x
-        (r"\d{17}[\dXx]", "[ID]"),
-        
-        # 3. 银行卡：匹配 12 到 19 位数字。由于身份证已处理，不会再误伤。
-        # 注意：使用 \b 确保只匹配完整的数字串，避免匹配到句子中的普通数字。
-        (r"\b\d{12,19}\b", "[BANKCARD]"),
-        
-        # 4. 手机：匹配 1[3-9]开头的11位数字。
-        # 注意：使用 \b 确保是完整的 11 位数字。
-        (r"\b1[3-9]\d{9}\b", "[PHONE]"),
-    ]
+# 优化后的 Anonymize 函数中的敏感信息替换顺序：
+def anonymize(text):
+    # 1. 邮箱 (保持不变)
+    text = re.sub(r'[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}', '[EMAIL]', text)
+
+    # 2. 身份证 (ID Card) - 15 或 18 位 (最高优先级，防止被银行卡或电话误伤)
+    # 必须使用 \b 确保匹配整个数字串
+    text = re.sub(r'\b\d{17}[\dXx]\b|\b\d{15}\b', '[ID]', text) 
+
+    # 3. 银行卡 (Bank Card) - 13-19 位，但必须是非 ID 的数字串
+    # 在 ID 已经被替换后，18 位数字串将不再存在，因此可以使用更宽泛的长度范围
+    text = re.sub(r'\b\d{13,19}\b', '[BANKCARD]', text)
+
+    # 4. 电话 (Phone) - 采用分开的精确匹配，以解决残留问题
+    # 匹配 11 位手机号 (1\d{10})
+    text = re.sub(r'\b1\d{10}\b', '[PHONE]', text) 
+    # 匹配 X-XXXX-XXXX (138-0000-1111)
+    text = re.sub(r'\b\d{3}-\d{4}-\d{4}\b', '[PHONE]', text) 
+    # 匹配 555 1234
+    text = re.sub(r'\b\d{3}\s\d{4}\b', '[PHONE]', text) 
     
-    for pattern, repl in patterns:
-        text = re.sub(pattern, repl, text)
-        
     return text
 
-def clean_text(text: str) -> str:
-    """Basic cleaning: remove HTML, URLs, extra spaces"""
-    # 移除 HTML 标签
-    text = re.sub(r"<[^>]+>", "", text)
-    # 移除 URLs
-    text = re.sub(r"http\S+|www\.\S+", "", text)
-    # 规范化空格：将多个空格替换为单个空格，并移除首尾空格
-    text = re.sub(r"\s+", " ", text).strip()
+import re
+
+def clean_text(text):
+    """移除 HTML、URL 并规范化空格。"""
+    
+    # 1. 移除 <script> 及其内容 (使用 re.DOTALL/re.S 匹配多行)
+    text = re.sub(r'<script[^>]*?>.*?</script>', ' ', text, flags=re.DOTALL)
+    
+    # 2. 移除所有 URL/链接
+    url_pattern = re.compile(r'https?://\S+|www\.\S+', re.I)
+    text = url_pattern.sub(' ', text)
+
+    # 3. 移除所有 HTML 标签
+    text = re.sub(r'<[^>]+>', ' ', text)
+    
+    # 4. 规范化空格和清理标点残留
+    text = re.sub(r'<a.*?>(.*?)</a>', r'\1', text) 
+
+    # 1. 移除 <script> 及其内容
+    text = re.sub(r'<script[^>]*?>.*?</script>', ' ', text, flags=re.DOTALL)
+    
+    # 2. 移除所有 <a> 标签及其内容 (因为 Link A 也不应该出现)
+    text = re.sub(r'<a.*?>(.*?)</a>', ' ', text)
+
+    # 3. 移除所有 URL/链接
+    text = re.sub(r'https?://\S+|www\.\S+', ' ', text, re.I)
+    
+    # 4. 移除所有剩余的 HTML 标签
+    text = re.sub(r'<[^>]+>', ' ', text)
+    
+    # 5. 规范化空格 (移除首尾空格，并将连续空格替换为单个空格)
+    text = text.strip()
+    text = re.sub(r'\s+', ' ', text)
+
     return text
 
 def preprocess(text: str) -> str:
@@ -1396,9 +1416,6 @@ def preprocess(text: str) -> str:
     result = clean_text(result)
     return result
     
-# --- 故事生成辅助方法（已修改）---
-
-# 变动点 4: 更改函数名并调整 Prompt 内容以要求新的 JSON 结构
 def build_suggestion_prompt(requirement_text):
     """Builds the prompt for the AI model based on natural language text, 
     requesting the specific frontend JSON structure."""
@@ -1432,7 +1449,6 @@ IMPORTANT:
 - The entire response should be in English."""
 
 
-# 变动点 5: 更改 parse_ai_response 函数，使其可以处理目标 JSON 格式
 def parse_ai_response(ai_text):
     """Parses the JSON response from the AI."""
     try:
@@ -1447,7 +1463,6 @@ def parse_ai_response(ai_text):
         logger.warning(f"Failed to parse AI response: {e}\nRaw: {ai_text[:100]}...")
         return get_default_story()
 
-# 变动点 6: 更改 get_default_story 函数，返回目标 JSON 格式的默认结构
 def get_default_story():
     """Returns a default user story object for fallback cases in the new format."""
     return {
