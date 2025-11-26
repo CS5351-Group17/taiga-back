@@ -1347,31 +1347,46 @@ def generate_single_story(requirement_text: str):
         logger.error(f"AI suggestion generation failed for processed requirement: '{log_text}...': {e}")
         raise AIServiceError(str(e))
 
-# --- 预处理辅助方法（保持不变）---
-# 优化后的 Anonymize 函数中的敏感信息替换顺序：
+# --- 预处理辅助方法 ---
 def anonymize(text):
-    # 1. 邮箱 (保持不变)
+    """
+    对文本进行脱敏处理：替换邮箱、身份证（大陆/香港）、银行卡和电话号码（大陆/香港/本地）为占位符。
+    """
+    # --- 1. 邮箱 ---
     text = re.sub(r'[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}', '[EMAIL]', text)
 
-    # 2. 身份证 (ID Card) - 15 或 18 位 (最高优先级，防止被银行卡或电话误伤)
-    # 必须使用 \b 确保匹配整个数字串
-    text = re.sub(r'\b\d{17}[\dXx]\b|\b\d{15}\b', '[ID]', text) 
+    # --- 2. 身份证 (ID Card) - 大陆和香港 (高优先级) ---
+    ID_CARD_PATTERN = re.compile(
+        # A. 中国大陆身份证 (18位或15位)
+        r'\b\d{17}[\dXx]\b|\b\d{15}\b'
+        r'|'
+        # B. 香港身份证 (HKID) - 常见的 XXXXXX(X) 格式
+        # 匹配 1-2个字母开头，6位数字，可选的括号和校验码。
+        r'\b[A-Z]{1,2}\d{6}\(?[0-9A-Z]\)?\b'
+    )
+    text = ID_CARD_PATTERN.sub('[ID]', text)
 
-    # 3. 银行卡 (Bank Card) - 13-19 位，但必须是非 ID 的数字串
-    # 在 ID 已经被替换后，18 位数字串将不再存在，因此可以使用更宽泛的长度范围
+    # --- 3. 银行卡 (Bank Card) - 13-19 位 (次高优先级) ---
     text = re.sub(r'\b\d{13,19}\b', '[BANKCARD]', text)
 
-    # 4. 电话 (Phone) - 采用分开的精确匹配，以解决残留问题
-    # 匹配 11 位手机号 (1\d{10})
-    text = re.sub(r'\b1\d{10}\b', '[PHONE]', text) 
-    # 匹配 X-XXXX-XXXX (138-0000-1111)
-    text = re.sub(r'\b\d{3}-\d{4}-\d{4}\b', '[PHONE]', text) 
-    # 匹配 555 1234
-    text = re.sub(r'\b\d{3}\s\d{4}\b', '[PHONE]', text) 
+    # --- 4. 电话 (Phone) - 大陆手机/香港手机/本地固话 (最低优先级) ---
+    PHONE_PATTERN = re.compile(
+        # A. 中国大陆 11 位手机号 (1[3-9]\d{9})
+        r'\b1[3-9]\d{9}\b' 
+        r'|'
+        # B. 香港 8 位手机号 ([5689]\d{7})
+        r'\b[5689]\d{7}\b'
+        r'|'
+        # C. 双分隔符号码 (满足 138-0000-1111)
+        r'\b\d{3}[-\s]\d{4}[-\s]\d{4}\b'
+        r'|'
+        # D. 单分隔符本地/固话 (满足 555 1234 或 021-88889999)
+        # 匹配 3-5位前缀 + 分隔符 + 4-9位号码
+        r'\b\d{3,5}[-\s]\d{4,9}\b'
+    )
+    text = PHONE_PATTERN.sub('[PHONE]', text) 
     
     return text
-
-import re
 
 def clean_text(text):
     """移除 HTML、URL 并规范化空格。"""
