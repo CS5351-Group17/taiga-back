@@ -1375,20 +1375,6 @@ import re
 
 def clean_text(text):
     """移除 HTML、URL 并规范化空格。"""
-    
-    # 1. 移除 <script> 及其内容 (使用 re.DOTALL/re.S 匹配多行)
-    text = re.sub(r'<script[^>]*?>.*?</script>', ' ', text, flags=re.DOTALL)
-    
-    # 2. 移除所有 URL/链接
-    url_pattern = re.compile(r'https?://\S+|www\.\S+', re.I)
-    text = url_pattern.sub(' ', text)
-
-    # 3. 移除所有 HTML 标签
-    text = re.sub(r'<[^>]+>', ' ', text)
-    
-    # 4. 规范化空格和清理标点残留
-    text = re.sub(r'<a.*?>(.*?)</a>', r'\1', text) 
-
     # 1. 移除 <script> 及其内容
     text = re.sub(r'<script[^>]*?>.*?</script>', ' ', text, flags=re.DOTALL)
     
