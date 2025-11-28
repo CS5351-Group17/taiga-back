@@ -23,3 +23,5 @@ static
 settings/config.py
 celerybeat-schedule
 .DS_Store
+*.pdf
+.vscode/*
